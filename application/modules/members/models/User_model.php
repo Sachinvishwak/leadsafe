@@ -1,0 +1,187 @@
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+
+class User_model extends CI_Model {
+     
+    //var $table , $column_order, $column_search , $order =  '';
+    var $table          = 'client';
+    var $column_order   = array('id','name','email','address'); //set column field database for datatable orderable
+    
+    var $column_sel     = array('*',
+        'status',
+        '(case when (status = 0) 
+        THEN "Inactive" when (status = 1) 
+        THEN "Active" ELSE
+        "Unknown" 
+        END) as statusShow'); 
+
+    var $column_search = array('id','name'); //set column field database for datatable searchable 
+    var $order         = array('id' => 'desc');  // default order
+    var $where         = array();
+    var $group_by      = 'id'; 
+
+    public function __construct(){
+        parent::__construct();
+    }
+    
+    public function set_data($where=''){
+        $this->where = $where; 
+    }//End function
+
+    private function _get_query()
+    {
+        $sel_fields = array_filter($this->column_sel); 
+        // $this->db->select($sel_fields);
+        // $this->db->from($this->table);
+        
+        $this->db->select('company_member_relations.type, client.*')
+                            ->from('company_member_relations')
+                            ->join('client', 'company_member_relations.member_id = client.id')
+                            ->where('company_member_relations.company_id',$_SESSION['company_sess']['id'])
+                            ->where('company_member_relations.type','client')->order_by("client.id", "desc");
+        
+        
+        
+        $i = 0;
+        foreach ($this->column_search as $emp) // loop column 
+        {
+            if(isset($_POST['search']['value']) && !empty($_POST['search']['value'])){
+            $_POST['search']['value'] = $_POST['search']['value'];
+            } else
+            $_POST['search']['value'] = '';
+            if($_POST['search']['value']) // if datatable send POST for search
+            {
+                if($i===0) // first loop
+                {
+                    $this->db->group_start();
+                    $this->db->like(($emp), $_POST['search']['value']);
+                }else{
+                    $this->db->or_like(($emp), $_POST['search']['value']);
+                }
+
+                if(count($this->column_search) - 1 == $i) //last loop
+                    $this->db->group_end(); //close bracket
+            }
+            $i++;
+        }
+
+        if(!empty($this->where))
+            $this->db->where($this->where); 
+
+        if(!empty($this->group_by)){
+            $this->db->group_by($this->group_by);
+        }
+         
+        if(isset($_POST['order'])) // here order processing
+        { 
+            $this->db->order_by($this->column_order[$_POST['order']['0']['column']], $_POST['order']['0']['dir']);
+        }else if(isset($this->order)){ 
+            $order = $this->order; 
+            $this->db->order_by(key($order), $order[key($order)]);
+        }
+       
+    }//End function
+
+    function get_list()
+    {
+        $this->_get_query();
+        if(isset($_POST['length']) && $_POST['length'] < 1) {
+            $_POST['length'] = '10';
+        }else{
+        	$_POST['length'] = isset($_POST['length']) ? $_POST['length'] :10;
+        }
+        if(isset($_POST['start']) && $_POST['start'] > 1) {
+            $_POST['start'] = $_POST['start'];
+        }
+        $_POST['start'] = isset($_POST['start']) ? $_POST['start']:0;
+        $this->db->limit($_POST['length'], $_POST['start']);
+        // $this->db->where('company_id',$_SESSION['company_sess']['id']);
+        $query = $this->db->get(); //lq();
+        return $query->result();
+    }//End function
+    function count_filtered()
+    {
+        $this->_get_query();
+        $query = $this->db->get();
+        return $query->num_rows();
+    }//End function
+    public function count_all()
+    {
+        $this->db->from($this->table);
+        if(!empty($this->where))
+            $this->db->where($this->where); 
+        return $this->db->count_all_results();
+    }//End function
+    
+    public function registration($user)
+    {   
+        $checkEmail = $this->db->select('*')->where(array('email'=>$user['email']))->get('client');
+        if($checkEmail->num_rows()){
+            $existId = $checkEmail->result();
+            $existId = $existId[0]->id;
+            return array('regType'=>'AE','existId'=>$existId); //already exist
+        }else{
+            $this->db->insert('client',$user);
+            $lastId = $this->db->insert_id();
+            if($lastId):
+                $returnData = $this->db->get_where('client',array('id'=>$lastId))->result();
+                return array('regType'=>'NR','returnData'=>$returnData);
+                // Normal registration
+            endif;
+        }
+        return false;   
+    }
+    
+    
+    // authtoken check
+    function checkAuthToken()
+    {
+        $authData = '';
+        $header         = $this->input->request_headers();
+        $header = array_change_key_case($header, CASE_LOWER);
+        if(array_key_exists ('auth-token', $header )){
+            $key = 'auth-token';
+        }elseif(array_key_exists ( 'authtoken' , $header )){
+            $key = 'authtoken';
+        }elseif(array_key_exists ( 'authToken' , $header )){
+            $key = 'authToken';
+        }else{
+            return FALSE; //authentication failed 
+        }
+        $authToken = $header[$key];
+        $role = $header['role'];
+        if($role == 'crew')
+        {
+            $role = 'crew_member';
+        }else if($role == 'leadcontractor' || $role == 'subcontractor')
+        {
+            $role = 'contractor';
+        }else if($role = 'client')
+        {
+            $role = 'client';
+        }
+        if(empty($authToken)){
+            return FALSE; //authentication failed 
+        }
+        $userAuthData = $this->isValidToken($authToken,$role);
+        if(!$userAuthData){
+            return FALSE; //authentication failed 
+        }
+        return TRUE;
+    }
+    
+    function isValidToken($authToken,$table)
+	{
+        $this->db->select('*');
+        $this->db->where('authToken',$authToken);
+        $sql = $this->db->get($table);
+        if($sql->num_rows() > 0)
+        {
+            return $sql->row();
+        }
+		return false;
+	}//end function
+    
+    
+   
+}//End Class
